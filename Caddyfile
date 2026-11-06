@@ -1,0 +1,35 @@
+{
+	admin off
+	servers {
+		trusted_proxies static 0.0.0.0/0 ::/0
+	}
+}
+
+:{$PORT} {
+	log
+
+	route {
+		rate_limit {
+			zone par_ip {
+				key {remote_host}
+				events 40
+				window 1s
+			}
+		}
+
+		coraza_waf {
+			load_owasp_crs
+			directives `
+				Include @coraza.conf-recommended
+				SecRuleEngine On
+				SecResponseBodyAccess Off
+				Include secrules.conf
+			`
+		}
+
+		reverse_proxy {$PRODUCTION_SITE} {
+			header_up Host {http.reverse_proxy.upstream.host}
+			header_down Location ^{$PRODUCTION_SITE} ""
+		}
+	}
+}

@@ -84,14 +84,14 @@ Les fichiers 901, 905, 949, 959, 980 et 999 ne détectent rien : ils initialisen
 
 La CRS fonctionne par score. Chaque règle qui reconnaît une attaque ajoute des points à la requête (5 pour une attaque critique). À la fin, la règle **949110** compare le total au seuil (5) et bloque la requête s'il est atteint.
 
-`secrules.conf` retire pour l'instant la règle 949110 : **la CRS détecte les attaques et les inscrit dans les logs, mais ne bloque rien.** Ce retrait date de l'ancienne configuration nginx. Le 09/11/2026, sur 867 requêtes réelles, 634 auraient été bloquées à tort :
+Jusqu'au 09/11/2026, `secrules.conf` retirait la règle 949110, un héritage de l'ancienne configuration nginx : la CRS détectait les attaques sans les bloquer. Ce jour-là, sur 867 requêtes réelles, 634 auraient été bloquées à tort :
 
 | Règle | Requêtes | Cause | Correction |
 | --- | --- | --- | --- |
 | 942290 (injection MongoDB) | 618 | Le cookie PostHog contient `$initial_person_info` : `$in` ressemble à un opérateur MongoDB | Cookie exclu de la CRS (`secrules.conf`) |
 | 920420 (type de contenu interdit) | 16 | Les Server Actions de Next.js envoient leur corps en `text/plain` | `text/plain` autorisé (`crs-setup.conf`) |
 
-Une fois ces corrections déployées, et quand les logs montrent que le trafic réel ne déclenche plus de règle CRS, il suffit de supprimer la ligne `SecRuleRemoveById 949110` pour activer le blocage.
+Ces deux faux positifs corrigés, le trafic réel ne déclenchait plus aucune règle CRS, et le blocage a été activé.
 
 ### Ce qui est bloqué aujourd'hui
 
@@ -100,14 +100,14 @@ Une fois ces corrections déployées, et quand les logs montrent que le trafic r
 | Plus de 40 requêtes par seconde depuis une même IP           | 429                                       | `Caddyfile` (`rate_limit`)                          |
 | Corps de requête illisible (JSON, XML ou multipart invalide) | 400                                       | `@coraza.conf-recommended`, règles 200002 et 200003 |
 | Corps de requête de plus de 12,5 Mo                          | 413                                       | `@coraza.conf-recommended`                          |
-| Attaque reconnue par la CRS                                  | Aucune : inscrite dans les logs seulement | CRS, sans la règle 949110                           |
+| Attaque reconnue par la CRS (score d'anomalie d'au moins 5)  | 403                                       | CRS, règle 949110                                   |
 
 ### Modifier les règles
 
 - **Ajouter une règle** (`secrules.conf`) : lui donner un ID entre 1 et 99999, la plage réservée aux règles locales.
 - **Corriger un faux positif** (`secrules.conf`) : repérer dans les logs l'ID de la règle et la variable visée (`[id "942290"]`, `found within REQUEST_COOKIES:…`). Exclure de préférence la seule variable (`SecRuleUpdateTargetById 942290 "!REQUEST_COOKIES:nom"`) plutôt que toute la règle (`SecRuleRemoveById 942290`). Noter la raison en commentaire sur la ligne du dessus.
 - **Changer un réglage de la CRS** (`crs-setup.conf`) : par exemple les types de contenu ou les méthodes HTTP autorisés.
-- **Faire bloquer la CRS** : supprimer la ligne `SecRuleRemoveById 949110`, après avoir corrigé les faux positifs visibles dans les logs.
+- **Repasser en détection seule** (faux positifs massifs, en urgence) : décommenter `SecRuleRemoveById 949110` dans `secrules.conf` et redéployer. La CRS continue alors de journaliser, sans bloquer.
 
 ## Variables d'environnement (Scalingo)
 
@@ -138,3 +138,5 @@ Le script envoie environ 520 requêtes sur `https://tacct.ademe.fr` : requêtes 
 - l'IP du visiteur retenue par Caddy (elle doit être égale à l'en-tête `Cf-Connecting-Ip`).
 
 Pour relire les logs d'un test passé sans renvoyer de requêtes : `bash scripts/test-waf.sh --analyse <RUN>`.
+
+Pour voir ce que le WAF a fait sur le vrai trafic depuis son dernier démarrage (requêtes bloquées, chemins en 403, règles CRS déclenchées) : `bash scripts/test-waf.sh --trafic`. C'est la commande à lancer après chaque modification des règles, pour repérer les faux positifs.

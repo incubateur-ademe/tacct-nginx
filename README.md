@@ -7,23 +7,28 @@ Toutes les requêtes des visiteurs passent par cette application. Elle limite le
 ## Parcours d'une requête
 
 ```
-Visiteur ──> routeur Scalingo ──> cette app (Caddy) ──────────────────────────> PRODUCTION_SITE
-                                   1. rate limiting : 40 requêtes/s par IP
-                                   2. WAF Coraza : CRS OWASP + secrules.conf
-                                   3. compression gzip / zstd
-                                   4. reverse proxy
+Visiteur ──> Cloudflare ──> routeur Scalingo ──> cette app (Caddy) ──────────────────────────> PRODUCTION_SITE
+                                                   1. rate limiting : 40 requêtes/s par IP
+                                                   2. WAF Coraza : CRS OWASP + secrules.conf
+                                                   3. compression gzip / zstd
+                                                   4. reverse proxy
 ```
+
+Le Cloudflare de l'ADEME filtre déjà certaines connexions (pays, VPN) et affiche alors une page « Accès refusé » : ces requêtes n'atteignent jamais Caddy.
+
+Pour retrouver l'IP réelle du visiteur, Caddy fait confiance au réseau privé Scalingo et aux plages d'IP de Cloudflare (`trusted_proxies` dans le `Caddyfile`). Si Cloudflare publie de nouvelles plages sur [cloudflare.com/ips](https://www.cloudflare.com/ips/), il faut les ajouter.
 
 ## Rôle des fichiers
 
-| Fichier | Rôle | À modifier ? |
-|---|---|---|
-| `Caddyfile` | Configuration du serveur : rate limiting, chargement du WAF, reverse proxy. | Oui |
-| `secrules.conf` | Règles WAF propres au projet, principalement la désactivation de règles CRS. Écrit en SecLang, le langage de règles de ModSecurity que Coraza reprend. | Oui |
-| `main.go` | Programme qui assemble Caddy avec ses deux plugins : Coraza (WAF) et caddy-ratelimit. | Rarement |
-| `go.mod` | Dépendances Go et leurs versions. Le premier bloc `require` liste les 3 dépendances choisies ; la longue liste marquée `// indirect` contient les dépendances de ces dépendances, ajoutées automatiquement. | Seulement pour une mise à jour |
-| `go.sum` | Empreintes qui garantissent que les dépendances téléchargées n'ont pas été modifiées. | Jamais (fichier généré) |
-| `Procfile` | Commande de démarrage sur Scalingo : lance le binaire compilé avec le `Caddyfile`. | Rarement |
+| Fichier         | Rôle                                                                                                                                                                                                        | À modifier ?                   |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `Caddyfile`     | Configuration du serveur : rate limiting, chargement du WAF, reverse proxy.                                                                                                                                 | Oui                            |
+| `secrules.conf` | Règles WAF propres au projet, principalement la désactivation de règles CRS. Écrit en SecLang, le langage de règles de ModSecurity que Coraza reprend.                                                      | Oui                            |
+| `main.go`       | Programme qui assemble Caddy avec ses deux plugins : Coraza (WAF) et caddy-ratelimit.                                                                                                                       | Rarement                       |
+| `go.mod`        | Dépendances Go et leurs versions. Le premier bloc `require` liste les 3 dépendances choisies ; la longue liste marquée `// indirect` contient les dépendances de ces dépendances, ajoutées automatiquement. | Seulement pour une mise à jour |
+| `go.sum`        | Empreintes qui garantissent que les dépendances téléchargées n'ont pas été modifiées.                                                                                                                       | Jamais (fichier généré)        |
+| `Procfile`      | Commande de démarrage sur Scalingo : lance le binaire compilé avec le `Caddyfile`.                                                                                                                          | Rarement                       |
+| `scripts/test-waf.sh` | Tests de bout en bout du WAF en prod (voir « Tester le WAF »).                                                                                                                                       | Pour ajouter un test           |
 
 ### Pourquoi des fichiers Go ?
 
@@ -53,23 +58,23 @@ Les fichiers qui commencent par `@` ne sont pas dans ce dépôt. Ils sont intég
 
 La CRS est un jeu de règles génériques, maintenu par l'OWASP, qui reconnaît les attaques web courantes. Chaque règle a un niveau de paranoïa (PL) de 1 à 4 : plus il est haut, plus la règle est stricte et risque de bloquer des requêtes légitimes. Seules les règles de niveau 1 sont actives ici.
 
-| Fichier | Ce qu'il détecte | Règles actives (PL1) |
-|---|---|---|
-| 911 | Méthodes HTTP autres que GET, HEAD, POST, OPTIONS | 1 |
-| 913 | Outils de scan connus (nikto, sqlmap…), repérés par leur User-Agent | 1 |
-| 920 | Requêtes HTTP mal formées ou anormales | 40 |
-| 921 | Attaques sur le protocole (request smuggling, injection d'en-têtes) | 11 |
-| 922 | Attaques via les envois de fichiers (multipart) | 4 |
-| 930 | Lecture de fichiers du serveur (`../`, `/etc/passwd`) | 5 |
-| 931 | Inclusion de fichiers distants (URL passée en paramètre) | 3 |
-| 932 | Exécution de commandes système (shell, PowerShell) | 19 |
-| 933 | Injection de code PHP | 13 |
-| 934 | Injections génériques : Node.js, SSRF, pollution de prototype JavaScript… | 7 |
-| 941 | XSS (injection de JavaScript) | 26 |
-| 942 | Injection SQL | 20 |
-| 943 | Fixation de session | 3 |
-| 944 | Attaques Java (Log4Shell, désérialisation) | 6 |
-| 950 à 956 | Fuites de données dans les réponses | Aucune : elles analysent le corps des réponses, désactivé ici (`SecResponseBodyAccess Off`) |
+| Fichier   | Ce qu'il détecte                                                          | Règles actives (PL1)                                                                        |
+| --------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 911       | Méthodes HTTP autres que GET, HEAD, POST, OPTIONS                         | 1                                                                                           |
+| 913       | Outils de scan connus (nikto, sqlmap…), repérés par leur User-Agent       | 1                                                                                           |
+| 920       | Requêtes HTTP mal formées ou anormales                                    | 40                                                                                          |
+| 921       | Attaques sur le protocole (request smuggling, injection d'en-têtes)       | 11                                                                                          |
+| 922       | Attaques via les envois de fichiers (multipart)                           | 4                                                                                           |
+| 930       | Lecture de fichiers du serveur (`../`, `/etc/passwd`)                     | 5                                                                                           |
+| 931       | Inclusion de fichiers distants (URL passée en paramètre)                  | 3                                                                                           |
+| 932       | Exécution de commandes système (shell, PowerShell)                        | 19                                                                                          |
+| 933       | Injection de code PHP                                                     | 13                                                                                          |
+| 934       | Injections génériques : Node.js, SSRF, pollution de prototype JavaScript… | 7                                                                                           |
+| 941       | XSS (injection de JavaScript)                                             | 26                                                                                          |
+| 942       | Injection SQL                                                             | 20                                                                                          |
+| 943       | Fixation de session                                                       | 3                                                                                           |
+| 944       | Attaques Java (Log4Shell, désérialisation)                                | 6                                                                                           |
+| 950 à 956 | Fuites de données dans les réponses                                       | Aucune : elles analysent le corps des réponses, désactivé ici (`SecResponseBodyAccess Off`) |
 
 Les fichiers 901, 905, 949, 959, 980 et 999 ne détectent rien : ils initialisent la CRS, calculent les scores et décident du blocage.
 
@@ -81,12 +86,12 @@ La CRS fonctionne par score. Chaque règle qui reconnaît une attaque ajoute des
 
 ### Ce qui est bloqué aujourd'hui
 
-| Requête | Réponse | Origine |
-|---|---|---|
-| Plus de 40 requêtes par seconde depuis une même IP | 429 | `Caddyfile` (`rate_limit`) |
-| Corps de requête illisible (JSON, XML ou multipart invalide) | 400 | `@coraza.conf-recommended`, règles 200002 et 200003 |
-| Corps de requête de plus de 12,5 Mo | 413 | `@coraza.conf-recommended` |
-| Attaque reconnue par la CRS | Aucune : inscrite dans les logs seulement | CRS, sans la règle 949110 |
+| Requête                                                      | Réponse                                   | Origine                                             |
+| ------------------------------------------------------------ | ----------------------------------------- | --------------------------------------------------- |
+| Plus de 40 requêtes par seconde depuis une même IP           | 429                                       | `Caddyfile` (`rate_limit`)                          |
+| Corps de requête illisible (JSON, XML ou multipart invalide) | 400                                       | `@coraza.conf-recommended`, règles 200002 et 200003 |
+| Corps de requête de plus de 12,5 Mo                          | 413                                       | `@coraza.conf-recommended`                          |
+| Attaque reconnue par la CRS                                  | Aucune : inscrite dans les logs seulement | CRS, sans la règle 949110                           |
 
 ### Modifier les règles
 
@@ -98,11 +103,11 @@ Toutes les modifications se font dans `secrules.conf` :
 
 ## Variables d'environnement (Scalingo)
 
-| Variable | Valeur |
-|---|---|
-| `BUILDPACK_URL` | `https://github.com/Scalingo/go-buildpack.git` |
+| Variable          | Valeur                                                             |
+| ----------------- | ------------------------------------------------------------------ |
+| `BUILDPACK_URL`   | `https://github.com/Scalingo/go-buildpack.git`                     |
 | `PRODUCTION_SITE` | URL du site TACCT, **sans `/` final** (sinon Caddy ne démarre pas) |
-| `PORT` | Fournie par Scalingo |
+| `PORT`            | Fournie par Scalingo                                               |
 
 ## Déploiement
 
@@ -110,12 +115,18 @@ Scalingo compile l'application avec le buildpack Go à chaque déploiement : « 
 
 Si le build ou le démarrage échoue, Scalingo garde la version précédente en ligne.
 
-## Logs
+## Tester le WAF
+
+Après chaque déploiement, sans VPN et avec la CLI Scalingo connectée :
 
 ```bash
-scalingo --app <nom-de-l-app> logs -f
+bash scripts/test-waf.sh
 ```
 
-- **Logs d'accès Caddy** (JSON) : `status`, `client_ip` (IP réelle du visiteur), `remote_ip` (IP du routeur Scalingo).
-- **Règles WAF déclenchées** : messages Coraza, avec l'ID de chaque règle (`[id "..."]`).
-- **Requête bloquée par le WAF** : message `WAF rule violation detected`, avec l'URI et l'IP du visiteur.
+Le script envoie environ 520 requêtes sur `https://tacct.ademe.fr` : requêtes normales, attaques connues (XSS, injection SQL…), corps invalides, et une rafale de 300 requêtes. Chaque requête porte un identifiant (`waftest=<RUN>-<test>-<n>`). Le script lit ensuite les logs des apps `tacct-nginx` (WAF) et `tacct-prod`, puis affiche pour chaque test :
+
+- les statuts vus par le WAF et par la prod, à côté du résultat attendu : une requête bloquée par le WAF n'apparaît pas dans les logs de la prod ;
+- les règles Coraza déclenchées ;
+- l'IP du visiteur retenue par Caddy (elle doit être égale à l'en-tête `Cf-Connecting-Ip`).
+
+Pour relire les logs d'un test passé sans renvoyer de requêtes : `bash scripts/test-waf.sh --analyse <RUN>`.

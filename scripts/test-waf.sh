@@ -57,25 +57,28 @@ else
   BASE="${1:-https://tacct.ademe.fr}"
   RUN="wt$(date +%H%M%S)"
   FORMAT='%{http_code} via=%header{via}\n'
-  # /robots.txt est la page la moins coûteuse pour la prod. Cloudflare y répond
-  # lui-même pour certains robots : les tests sur le User-Agent visent /waf-test.
-  CIBLE="/robots.txt"
+  # /sitemap.xml : petite page qui existe. Pas /robots.txt : quand le WAF bloque,
+  # Cloudflare remplace l'erreur par son propre robots.txt, servi en 200.
+  # Les tests sur le User-Agent visent /waf-test (Cloudflare les bloque avant le WAF).
+  CIBLE="/sitemap.xml"
   # Contenu typique du cookie PostHog (JSON encodé), qui déclenchait la 942290.
   POSTHOG='%7B%22%24initial_person_info%22%3A%7B%22r%22%3A%22%24direct%22%7D%7D'
 
   # run <test> <nombre> <parallélisme> <suffixe d'URL> [arguments curl...]
-  # Un seul processus curl (mode parallèle intégré) : avec plusieurs processus,
-  # les lignes de sortie s'entremêlent sous Windows.
+  # Un seul processus curl : avec plusieurs processus, les lignes de sortie
+  # s'entremêlent sous Windows. Mode parallèle (-Z) seulement si parallélisme > 1 :
+  # en mode parallèle, curl ignore --rate.
   # "via=2.0 Caddy" dans la réponse = la requête a traversé le WAF jusqu'à la prod.
   run() {
     local nom="$1" n="$2" par="$3" extra="$4" i; shift 4
-    local cfg="$TMP/$nom.cfg"
+    local cfg="$TMP/$nom.cfg" parallele=()
+    [ "$par" -gt 1 ] && parallele=(-Z --parallel-max "$par")
     : > "$cfg"
     for i in $(seq 1 "$n"); do
       printf 'url = "%s"\noutput = "/dev/null"\n' "$BASE$CIBLE?waftest=$RUN-$nom-$i$extra" >> "$cfg"
     done
     printf '  %-10s ' "$nom"
-    curl -s --no-progress-meter -g -Z --parallel-max "$par" --max-time 60 -w "$FORMAT" "$@" -K "$cfg" 2>/dev/null \
+    curl -s --no-progress-meter -g ${parallele[@]+"${parallele[@]}"} --max-time 60 -w "$FORMAT" "$@" -K "$cfg" 2>/dev/null \
       | sort | uniq -c | awk '{$1 = $1; printf "%s   ", $0}'
     echo
   }

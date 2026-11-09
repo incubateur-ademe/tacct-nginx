@@ -28,10 +28,25 @@ if grep -q '^SecRuleRemoveById 949110' "$SECRULES" 2>/dev/null; then MODE=détec
 
 compte() { sort | uniq -c | awk '{printf "%sx%s ", $1, $2}'; }
 
+# lire_logs <app> <fichier> : 10 000 dernières lignes de logs, 3 essais.
+# L'API de logs Scalingo échoue parfois ("Fail to query logs...") : on ne garde que
+# les lignes datées, et on signale l'échec au lieu d'afficher des résultats vides.
+lire_logs() {
+  local essai
+  for essai in 1 2 3; do
+    scalingo --region "$REGION" --app "$1" logs --lines 10000 2>/dev/null \
+      | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} ' > "$2"
+    [ -s "$2" ] && return 0
+    sleep 5
+  done
+  echo "  ÉCHEC : logs de $1 illisibles (API Scalingo). Relancer l'analyse plus tard : --analyse ${RUN:-}" >&2
+  return 1
+}
+
 if [ "${1:-}" = "--trafic" ]; then
   # Vrai trafic (hors requêtes de test) depuis le dernier démarrage de Caddy
   # (déploiement ou redémarrage) : ce que le WAF a bloqué, ce que la CRS a détecté.
-  scalingo --region "$REGION" --app "$WAF_APP" logs --lines 10000 2>/dev/null > "$TMP/brut.log"
+  lire_logs "$WAF_APP" "$TMP/brut.log" || exit 1
   debut=$(grep 'serving initial configuration' "$TMP/brut.log" | tail -1 | cut -c1-19)
   [ -n "$debut" ] || debut=$(head -1 "$TMP/brut.log" | cut -c1-19)
   awk -v d="$debut" 'substr($0,1,19) >= d' "$TMP/brut.log" > "$TMP/waf.log"
@@ -112,8 +127,9 @@ else
 fi
 
 echo "== Analyse des logs Scalingo (RUN=$RUN, mode attendu : $MODE)"
-scalingo --region "$REGION" --app "$WAF_APP" logs --lines 10000 2>/dev/null > "$TMP/waf.log"
-scalingo --region "$REGION" --app "$PROD_APP" logs --lines 10000 2>/dev/null > "$TMP/prod.log"
+ok_waf=1; ok_prod=1
+lire_logs "$WAF_APP" "$TMP/waf.log" || ok_waf=0
+lire_logs "$PROD_APP" "$TMP/prod.log" || ok_prod=0
 
 attendu() {
   local attaque="200 / 200"
@@ -135,6 +151,8 @@ for t in $TESTS; do
   waf=$(grep '"handled request"' "$TMP/waf.log" | grep "waftest=$RUN-$t-" | grep -oE '"status":[0-9]+' | cut -d: -f2 | compte)
   prod=$(grep "waftest=$RUN-$t-" "$TMP/prod.log" | grep -oE ' status=[0-9]+' | cut -d= -f2 | compte)
   ids=$(grep "waftest=$RUN-$t-" "$TMP/waf.log" | grep -oE '\[id \\"[0-9]+\\"\]' | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')
+  [ "$ok_waf" = 1 ] || { waf="?"; ids="?"; }
+  [ "$ok_prod" = 1 ] || prod="?"
   printf '  %-10s %-24s %-24s %-26s %s\n' "$t" "${waf:--}" "${prod:--}" "$(attendu "$t")" "$ids"
 done
 

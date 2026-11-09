@@ -23,7 +23,8 @@ Pour retrouver l'IP réelle du visiteur, Caddy fait confiance au réseau privé 
 | Fichier         | Rôle                                                                                                                                                                                                        | À modifier ?                   |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
 | `Caddyfile`     | Configuration du serveur : rate limiting, chargement du WAF, reverse proxy.                                                                                                                                 | Oui                            |
-| `secrules.conf` | Règles WAF propres au projet, principalement la désactivation de règles CRS. Écrit en SecLang, le langage de règles de ModSecurity que Coraza reprend.                                                      | Oui                            |
+| `crs-setup.conf` | Réglages de la CRS propres au projet (types de contenu autorisés…), chargés avant la CRS. Écrit en SecLang, le langage de règles de ModSecurity que Coraza reprend.                                       | Oui                            |
+| `secrules.conf` | Exclusions de règles CRS (faux positifs) et règles propres au projet, chargées après la CRS. Écrit en SecLang.                                                                                             | Oui                            |
 | `main.go`       | Programme qui assemble Caddy avec ses deux plugins : Coraza (WAF) et caddy-ratelimit.                                                                                                                       | Rarement                       |
 | `go.mod`        | Dépendances Go et leurs versions. Le premier bloc `require` liste les 3 dépendances choisies ; la longue liste marquée `// indirect` contient les dépendances de ces dépendances, ajoutées automatiquement. | Seulement pour une mise à jour |
 | `go.sum`        | Empreintes qui garantissent que les dépendances téléchargées n'ont pas été modifiées.                                                                                                                       | Jamais (fichier généré)        |
@@ -49,8 +50,9 @@ Coraza charge les fichiers suivants, dans cet ordre (bloc `coraza_waf` du `Caddy
 
 1. `@coraza.conf-recommended` : réglages du moteur (lecture du corps des requêtes, taille maximale de 12,5 Mo, rejet des corps illisibles).
 2. `@crs-setup.conf.example` : réglages de la CRS (niveau de paranoïa 1, seuil de blocage 5).
-3. `@owasp_crs/*.conf` : les règles de l'**OWASP Core Rule Set (CRS) 4.25.0**.
-4. `secrules.conf` : les règles du projet. Ce fichier doit rester **en dernier**, car `SecRuleRemoveById` ne peut retirer qu'une règle déjà chargée.
+3. `crs-setup.conf` : réglages de la CRS propres au projet. Il doit rester **avant** la CRS, qui n'applique ses valeurs par défaut qu'aux variables encore vides.
+4. `@owasp_crs/*.conf` : les règles de l'**OWASP Core Rule Set (CRS) 4.25.0**.
+5. `secrules.conf` : les exclusions et règles du projet. Il doit rester **en dernier**, car `SecRuleRemoveById` et `SecRuleUpdateTargetBy…` ne s'appliquent qu'à des règles déjà chargées.
 
 Les fichiers qui commencent par `@` ne sont pas dans ce dépôt. Ils sont intégrés au binaire par le module Go `coraza-coreruleset` (sa version est dans `go.mod`). On peut les lire sur [GitHub](https://github.com/corazawaf/coraza-coreruleset/tree/v4.25.0/rules).
 
@@ -82,7 +84,14 @@ Les fichiers 901, 905, 949, 959, 980 et 999 ne détectent rien : ils initialisen
 
 La CRS fonctionne par score. Chaque règle qui reconnaît une attaque ajoute des points à la requête (5 pour une attaque critique). À la fin, la règle **949110** compare le total au seuil (5) et bloque la requête s'il est atteint.
 
-`secrules.conf` retire la règle 949110 pour éviter les faux positifs. **La CRS détecte donc les attaques et les inscrit dans les logs, mais ne bloque rien.**
+`secrules.conf` retire pour l'instant la règle 949110 : **la CRS détecte les attaques et les inscrit dans les logs, mais ne bloque rien.** Ce retrait date de l'ancienne configuration nginx. Le 09/11/2026, sur 867 requêtes réelles, 634 auraient été bloquées à tort :
+
+| Règle | Requêtes | Cause | Correction |
+| --- | --- | --- | --- |
+| 942290 (injection MongoDB) | 618 | Le cookie PostHog contient `$initial_person_info` : `$in` ressemble à un opérateur MongoDB | Cookie exclu de la CRS (`secrules.conf`) |
+| 920420 (type de contenu interdit) | 16 | Les Server Actions de Next.js envoient leur corps en `text/plain` | `text/plain` autorisé (`crs-setup.conf`) |
+
+Une fois ces corrections déployées, et quand les logs montrent que le trafic réel ne déclenche plus de règle CRS, il suffit de supprimer la ligne `SecRuleRemoveById 949110` pour activer le blocage.
 
 ### Ce qui est bloqué aujourd'hui
 
@@ -95,10 +104,9 @@ La CRS fonctionne par score. Chaque règle qui reconnaît une attaque ajoute des
 
 ### Modifier les règles
 
-Toutes les modifications se font dans `secrules.conf` :
-
-- **Ajouter une règle** : lui donner un ID entre 1 et 99999, la plage réservée aux règles locales.
-- **Corriger un faux positif** : repérer l'ID de la règle dans les logs (par exemple `[id "942100"]`), puis ajouter `SecRuleRemoveById 942100`, avec la raison en commentaire sur la ligne du dessus.
+- **Ajouter une règle** (`secrules.conf`) : lui donner un ID entre 1 et 99999, la plage réservée aux règles locales.
+- **Corriger un faux positif** (`secrules.conf`) : repérer dans les logs l'ID de la règle et la variable visée (`[id "942290"]`, `found within REQUEST_COOKIES:…`). Exclure de préférence la seule variable (`SecRuleUpdateTargetById 942290 "!REQUEST_COOKIES:nom"`) plutôt que toute la règle (`SecRuleRemoveById 942290`). Noter la raison en commentaire sur la ligne du dessus.
+- **Changer un réglage de la CRS** (`crs-setup.conf`) : par exemple les types de contenu ou les méthodes HTTP autorisés.
 - **Faire bloquer la CRS** : supprimer la ligne `SecRuleRemoveById 949110`, après avoir corrigé les faux positifs visibles dans les logs.
 
 ## Variables d'environnement (Scalingo)

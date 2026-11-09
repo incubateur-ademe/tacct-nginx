@@ -1,7 +1,12 @@
 {
 	admin off
 	servers {
-		trusted_proxies static 0.0.0.0/0 ::/0
+		# Le routeur Scalingo ajoute l'IP du visiteur à droite de X-Forwarded-For.
+		# En mode strict, Caddy lit l'en-tête de droite à gauche et retient la
+		# première IP non privée dans {client_ip}. Une IP ajoutée à gauche par
+		# le visiteur lui-même est donc ignorée.
+		trusted_proxies static private_ranges
+		trusted_proxies_strict
 	}
 }
 
@@ -11,7 +16,8 @@
 	route {
 		rate_limit {
 			zone par_ip {
-				key {remote_host}
+				# Pas {remote_host} : c'est l'IP du routeur Scalingo, commune à tous les visiteurs.
+				key {client_ip}
 				events 40
 				window 1s
 			}
@@ -19,13 +25,22 @@
 
 		coraza_waf {
 			load_owasp_crs
+			# load_owasp_crs rend seulement les fichiers @... disponibles :
+			# il faut inclure la CRS explicitement.
+			# secrules.conf doit rester APRES la CRS, sinon SecRuleRemoveById
+			# ne trouve pas encore la règle 949110 et ne la retire pas.
 			directives `
 				Include @coraza.conf-recommended
+				Include @crs-setup.conf.example
+				Include @owasp_crs/*.conf
 				SecRuleEngine On
 				SecResponseBodyAccess Off
 				Include secrules.conf
 			`
 		}
+
+		# Compresse les réponses (sans effet si l'app les compresse déjà).
+		encode zstd gzip
 
 		reverse_proxy {$PRODUCTION_SITE} {
 			header_up Host {http.reverse_proxy.upstream.host}

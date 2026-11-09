@@ -33,7 +33,7 @@
 			# il faut inclure la CRS explicitement.
 			# crs-setup.conf (réglages de la CRS) doit rester AVANT la CRS.
 			# secrules.conf (exclusions) doit rester APRES la CRS, sinon
-			# SecRuleRemoveById ne trouve pas encore les règles à retirer.
+			# SecRuleRemoveById / SecRuleUpdateTarget... ne trouvent pas encore les règles.
 			# SecDebugLogLevel 1 : le journal de débogage de Coraza ne garde que les
 			# erreurs (sinon ~3 avertissements "key not found in collection" par
 			# requête). Les règles déclenchées restent journalisées.

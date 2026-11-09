@@ -9,7 +9,7 @@ Toutes les requêtes des visiteurs passent par cette application. Elle limite le
 ```
 Visiteur ──> Cloudflare ──> routeur Scalingo ──> cette app (Caddy) ──────────────────────────> PRODUCTION_SITE
                                                    1. rate limiting : 40 requêtes/s par IP
-                                                   2. WAF Coraza : CRS OWASP + secrules.conf
+                                                   2. WAF Coraza : CRS OWASP + crs-setup.conf + secrules.conf
                                                    3. compression gzip / zstd
                                                    4. reverse proxy
 ```
@@ -49,7 +49,7 @@ go mod tidy
 Coraza charge les fichiers suivants, dans cet ordre (bloc `coraza_waf` du `Caddyfile`) :
 
 1. `@coraza.conf-recommended` : réglages du moteur (lecture du corps des requêtes, taille maximale de 12,5 Mo, rejet des corps illisibles).
-2. `@crs-setup.conf.example` : réglages de la CRS (niveau de paranoïa 1, seuil de blocage 5).
+2. `@crs-setup.conf.example` : configuration minimale de la CRS. Les autres réglages gardent leur valeur par défaut, notamment le niveau de paranoïa 1 et le seuil de blocage 5.
 3. `crs-setup.conf` : réglages de la CRS propres au projet. Il doit rester **avant** la CRS, qui n'applique ses valeurs par défaut qu'aux variables encore vides.
 4. `@owasp_crs/*.conf` : les règles de l'**OWASP Core Rule Set (CRS) 4.25.0**.
 5. `secrules.conf` : les exclusions et règles du projet. Il doit rester **en dernier**, car `SecRuleRemoveById` et `SecRuleUpdateTargetBy…` ne s'appliquent qu'à des règles déjà chargées.
@@ -101,6 +101,7 @@ Ces deux faux positifs corrigés, le trafic réel ne déclenchait plus aucune r�
 | Corps de requête illisible (JSON, XML ou multipart invalide) | 400                                       | `@coraza.conf-recommended`, règles 200002 et 200003 |
 | Corps de requête de plus de 12,5 Mo                          | 413                                       | `@coraza.conf-recommended`                          |
 | Attaque reconnue par la CRS (score d'anomalie d'au moins 5)  | 403                                       | CRS, règle 949110                                   |
+| Outils de scan connus (sqlmap…), Log4Shell, VPN, certains pays | 403, avant même le WAF                  | Cloudflare de l'ADEME                               |
 
 ### Modifier les règles
 
@@ -131,7 +132,7 @@ Après chaque déploiement, sans VPN et avec la CLI Scalingo connectée :
 bash scripts/test-waf.sh
 ```
 
-Le script envoie environ 520 requêtes sur `https://tacct.ademe.fr` : requêtes normales, attaques connues (XSS, injection SQL…), corps invalides, et une rafale de 300 requêtes. Chaque requête porte un identifiant (`waftest=<RUN>-<test>-<n>`). Le script lit ensuite les logs des apps `tacct-nginx` (WAF) et `tacct-prod`, puis affiche pour chaque test :
+Le script envoie environ 520 requêtes sur `https://tacct.ademe.fr` : requêtes normales, attaques connues (XSS, injection SQL…), contrôles des faux positifs corrigés (cookie PostHog, Server Action), corps invalides, et une rafale de 300 requêtes. Chaque requête porte un identifiant (`waftest=<RUN>-<test>-<n>`). Le script lit ensuite les logs des apps `tacct-nginx` (WAF) et `tacct-prod`, puis affiche pour chaque test :
 
 - les statuts vus par le WAF et par la prod, à côté du résultat attendu : une requête bloquée par le WAF n'apparaît pas dans les logs de la prod ;
 - les règles Coraza déclenchées ;
@@ -139,4 +140,4 @@ Le script envoie environ 520 requêtes sur `https://tacct.ademe.fr` : requêtes 
 
 Pour relire les logs d'un test passé sans renvoyer de requêtes : `bash scripts/test-waf.sh --analyse <RUN>`.
 
-Pour voir ce que le WAF a fait sur le vrai trafic depuis son dernier démarrage (requêtes bloquées, chemins en 403, règles CRS déclenchées) : `bash scripts/test-waf.sh --trafic`. C'est la commande à lancer après chaque modification des règles, pour repérer les faux positifs.
+Pour voir ce que le WAF a fait sur le vrai trafic depuis son dernier démarrage (requêtes bloquées, chemins en 403, règles CRS déclenchées) : `bash scripts/test-waf.sh --trafic`. C'est la commande à lancer après chaque modification des règles, pour repérer les faux positifs. Elle repart de zéro à chaque démarrage de Caddy (déploiement ou redémarrage) et ne lit que les 10 000 dernières lignes de logs, soit environ une heure de trafic.

@@ -8,7 +8,7 @@ Toutes les requêtes des visiteurs passent par cette application. Elle limite le
 
 ```
 Visiteur ──> Cloudflare ──> routeur Scalingo ──> cette app (Caddy) ──────────────────────────> PRODUCTION_SITE
-                                                   1. rate limiting : 40 requêtes/s par IP (150 pour les tuiles de carte)
+                                                   1. rate limiting : 40 requêtes/s par IP (100 pour les tuiles de carte)
                                                    2. WAF Coraza : CRS OWASP + crs-setup.conf + secrules.conf
                                                    3. compression gzip / zstd
                                                    4. reverse proxy
@@ -97,7 +97,7 @@ Ces deux faux positifs corrigés, le trafic réel ne déclenchait plus aucune r�
 
 | Requête                                                      | Réponse                                   | Origine                                             |
 | ------------------------------------------------------------ | ----------------------------------------- | --------------------------------------------------- |
-| Plus de 40 req/s par IP, 150 pour les tuiles de carte        | 429                                       | `Caddyfile` (`rate_limit`)                          |
+| Plus de 40 req/s par IP, 100 pour les tuiles de carte        | 429                                       | `Caddyfile` (`rate_limit`)                          |
 | Corps de requête illisible (JSON, XML ou multipart invalide) | 400                                       | `@coraza.conf-recommended`, règles 200002 et 200003 |
 | Corps de requête de plus de 12,5 Mo                          | 413                                       | `@coraza.conf-recommended`                          |
 | Attaque reconnue par la CRS (score d'anomalie d'au moins 5)  | 403                                       | CRS, règle 949110                                   |
@@ -116,14 +116,16 @@ Le `rate_limit` du `Caddyfile` a donc deux zones, chacune avec ses propres compt
 | Zone            | Chemins                                     | Limite par IP  |
 | --------------- | ------------------------------------------- | -------------- |
 | `par_ip`        | tout le site, **sauf** les routes de tuiles | 40 requêtes/s  |
-| `tuiles_par_ip` | routes de tuiles : `/api/map-proxy`         | 150 requêtes/s |
+| `tuiles_par_ip` | routes de tuiles : `/api/map-proxy`         | 100 requêtes/s |
 
 `/api/map-proxy` relaie les tuiles de toutes les cartes qui passent par le site, quel que soit le serveur d'origine (cartagene.cerema.fr, lcz-generator.rub.de…). La route reste limitée, car elle envoie des requêtes vers des serveurs extérieurs.
+
+**Pourquoi 100, et pas plus :** 100 couvre le pic réel (79/s) avec de la marge. Une limite plus haute laisserait une seule IP saturer la prod. tacct-prod n'a qu'un conteneur et accepte environ 100 requêtes simultanées. Au-delà, le routeur Scalingo répond 503 (`container=false` dans les logs de tacct-prod) à **tous** les visiteurs, pas seulement à celui qui envoie la rafale. Le 10/11/2026, avec une limite à 150, un test à 150 requêtes simultanées sur `/api/map-proxy` a provoqué 49 erreurs 503, dont une chez un vrai visiteur sur une autre page.
 
 **Quand adapter ces réglages :**
 
 - **Une nouvelle route sert des tuiles** (autre proxy, tuiles générées par le site…) : ajouter son chemin aux **deux** blocs `match` : `path …` de la zone `tuiles_par_ip` et `not path …` de la zone `par_ip`. Les deux listes doivent rester identiques. Sinon, la route compterait dans la limite à 40, ou dans aucune zone.
-- **Une carte reçoit encore des 429** (carte plus dense, plus de couches) : augmenter `events` de la zone `tuiles_par_ip`.
+- **Une carte reçoit encore des 429** (carte plus dense, plus de couches) : augmenter `events` de la zone `tuiles_par_ip`. Au-delà de 100, ajouter d'abord un conteneur à tacct-prod (voir ci-dessus).
 - **Une carte charge ses tuiles directement depuis un serveur externe**, sans passer par le site : rien à faire, ces requêtes ne traversent pas Caddy.
 
 Pour vérifier, après le déploiement : `bash scripts/test-waf.sh --trafic`. La rubrique « Requêtes 429 » liste les chemins limités et le nombre d'IP touchées. Des 429 venant de navigateurs sur une route de tuiles signalent une limite trop basse.

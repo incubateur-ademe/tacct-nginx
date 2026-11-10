@@ -30,7 +30,8 @@
 		#   - ET exclue de la zone "par_ip" (match not path ...).
 		# Garder les deux listes de chemins identiques. Nouvelle carte servie par une
 		# nouvelle route, ou carte qui reçoit des 429 : adapter ces deux listes, et si
-		# besoin "events" de la zone tuiles. Vérifier ensuite avec
+		# besoin "events" de la zone tuiles, en respectant la capacité de tacct-prod
+		# (voir le commentaire de cette zone). Vérifier ensuite avec
 		# "scripts/test-waf.sh --trafic" (rubrique 429 par chemin). Voir le README,
 		# section « Rate limiting et cartes ».
 		# Les tuiles chargées directement depuis un serveur externe, sans passer par
@@ -52,10 +53,14 @@
 				# /api/map-proxy relaie les tuiles de toutes les cartes qui passent par le
 				# site, quel que soit leur serveur (cartagene.cerema.fr, lcz-generator.rub.de…).
 				# Le 10/11/2026, avec 40/s, deux visiteurs ont perdu 39 et 60 tuiles ; le pic
-				# mesuré était de 79 requêtes/s. 150 laisse de la marge, tout en gardant une
-				# limite : cette route envoie des requêtes vers des serveurs extérieurs.
+				# mesuré était de 79 requêtes/s. 100 couvre ce pic avec de la marge.
+				# NE PAS MONTER AU-DESSUS SANS AJOUTER UN CONTENEUR À tacct-prod : avec un seul
+				# conteneur, la prod accepte environ 100 requêtes simultanées. Au-delà, le
+				# routeur Scalingo répond 503 à TOUS les visiteurs. Testé le 10/11/2026 avec
+				# une limite à 150 : une seule IP à 150 requêtes simultanées a provoqué 49
+				# erreurs 503, dont une chez un vrai visiteur sur une autre page.
 				key {client_ip}
-				events 150
+				events 100
 				window 1s
 			}
 		}

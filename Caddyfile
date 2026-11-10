@@ -18,11 +18,44 @@
 	log
 
 	route {
+		# Rate limiting par IP, en deux zones aux compteurs séparés : une requête n'est
+		# comptée que par la zone dont le "match" lui correspond.
+		#
+		# CARTOGRAPHIE : une carte charge ses tuiles (images) par rafales, une requête par
+		# tuile : 60 à 80 en une seconde à chaque zoom ou déplacement, davantage avec
+		# plusieurs couches ou un grand écran. Avec la limite générale (40/s), une partie
+		# des tuiles recevrait un 429 et la carte s'afficherait avec des trous.
+		# Toute route du site qui sert des tuiles doit donc être :
+		#   - dans la zone "tuiles_par_ip" (match path ...),
+		#   - ET exclue de la zone "par_ip" (match not path ...).
+		# Garder les deux listes de chemins identiques. Nouvelle carte servie par une
+		# nouvelle route, ou carte qui reçoit des 429 : adapter ces deux listes, et si
+		# besoin "events" de la zone tuiles. Vérifier ensuite avec
+		# "scripts/test-waf.sh --trafic" (rubrique 429 par chemin). Voir le README,
+		# section « Rate limiting et cartes ».
+		# Les tuiles chargées directement depuis un serveur externe, sans passer par
+		# le site, ne traversent pas Caddy et ne sont pas concernées.
 		rate_limit {
 			zone par_ip {
+				match {
+					not path /api/map-proxy
+				}
 				# Pas {remote_host} : c'est l'IP du routeur Scalingo, commune à tous les visiteurs.
 				key {client_ip}
 				events 40
+				window 1s
+			}
+			zone tuiles_par_ip {
+				match {
+					path /api/map-proxy
+				}
+				# /api/map-proxy relaie les tuiles de toutes les cartes qui passent par le
+				# site, quel que soit leur serveur (cartagene.cerema.fr, lcz-generator.rub.de…).
+				# Le 10/11/2026, avec 40/s, deux visiteurs ont perdu 39 et 60 tuiles ; le pic
+				# mesuré était de 79 requêtes/s. 150 laisse de la marge, tout en gardant une
+				# limite : cette route envoie des requêtes vers des serveurs extérieurs.
+				key {client_ip}
+				events 150
 				window 1s
 			}
 		}

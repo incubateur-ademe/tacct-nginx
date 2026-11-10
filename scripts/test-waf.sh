@@ -58,6 +58,13 @@ if [ "${1:-}" = "--trafic" ]; then
   echo "== Requêtes 403 du WAF : chemin (10 plus fréquents)"
   acces | grep -v '"Via":\["2.0 Caddy"\]' | grep '"status":403' | grep -oE '"uri":"[^"?]*' | cut -d'"' -f4 \
     | sort | uniq -c | sort -rn | head -10
+  # Des 429 de navigateurs sur une route de tuiles de carte = limite trop basse pour
+  # la cartographie : voir la zone "tuiles_par_ip" du Caddyfile.
+  echo "== Requêtes 429 (rate limiting) : nombre, chemin, nombre d'IP (10 chemins les plus fréquents)"
+  acces | grep -v '"Via":\["2.0 Caddy"\]' | grep '"status":429' \
+    | sed -nE 's/.*"client_ip":"([^"]+)".*"uri":"([^"?]*).*/\2 \1/p' \
+    | awk '{n[$1]++; if (!vu[$0]++) ips[$1]++} END {for (c in n) printf "  %s %s (%s IP)\n", n[c], c, ips[c]}' \
+    | sort -rn | head -10
   echo "== Règles CRS déclenchées : nombre, id, message (variable visée)"
   grep 'Coraza: ' "$TMP/waf.log" | grep -v 'waftest=\|rafale=' | sed -nE \
     -e 's/.*\[id \\"([0-9]+)\\"\].*\[msg \\"([^\\]{0,50}).*found within ([A-Z_]+(:[A-Za-z_]{0,20})?).*/\1 \2 (\3)/p' -e 't' \
@@ -83,11 +90,13 @@ else
   # Un seul processus curl : avec plusieurs processus, les lignes de sortie
   # s'entremêlent sous Windows. Mode parallèle (-Z) seulement si parallélisme > 1 :
   # en mode parallèle, curl ignore --rate.
+  # --parallel-immediate : sans lui, un curl sans HTTP/2 (celui de Git pour Windows)
+  # ouvre ses connexions une par une, et la rafale plafonne à ~11 req/s, sous la limite.
   # "via=2.0 Caddy" dans la réponse = la requête a traversé le WAF jusqu'à la prod.
   run() {
     local nom="$1" n="$2" par="$3" extra="$4" i; shift 4
     local cfg="$TMP/$nom.cfg" parallele=()
-    [ "$par" -gt 1 ] && parallele=(-Z --parallel-max "$par")
+    [ "$par" -gt 1 ] && parallele=(-Z --parallel-immediate --parallel-max "$par")
     : > "$cfg"
     for i in $(seq 1 "$n"); do
       printf 'url = "%s"\noutput = "/dev/null"\n' "$BASE$CIBLE?waftest=$RUN-$nom-$i$extra" >> "$cfg"

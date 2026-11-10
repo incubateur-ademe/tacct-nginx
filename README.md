@@ -8,7 +8,7 @@ Toutes les requêtes des visiteurs passent par cette application. Elle limite le
 
 ```
 Visiteur ──> Cloudflare ──> routeur Scalingo ──> cette app (Caddy) ──────────────────────────> PRODUCTION_SITE
-                                                   1. rate limiting : 40 requêtes/s par IP
+                                                   1. rate limiting : 40 requêtes/s par IP (150 pour les tuiles de carte)
                                                    2. WAF Coraza : CRS OWASP + crs-setup.conf + secrules.conf
                                                    3. compression gzip / zstd
                                                    4. reverse proxy
@@ -97,17 +97,43 @@ Ces deux faux positifs corrigés, le trafic réel ne déclenchait plus aucune r�
 
 | Requête                                                      | Réponse                                   | Origine                                             |
 | ------------------------------------------------------------ | ----------------------------------------- | --------------------------------------------------- |
-| Plus de 40 requêtes par seconde depuis une même IP           | 429                                       | `Caddyfile` (`rate_limit`)                          |
+| Plus de 40 req/s par IP, 150 pour les tuiles de carte        | 429                                       | `Caddyfile` (`rate_limit`)                          |
 | Corps de requête illisible (JSON, XML ou multipart invalide) | 400                                       | `@coraza.conf-recommended`, règles 200002 et 200003 |
 | Corps de requête de plus de 12,5 Mo                          | 413                                       | `@coraza.conf-recommended`                          |
 | Attaque reconnue par la CRS (score d'anomalie d'au moins 5)  | 403                                       | CRS, règle 949110                                   |
 | Outils de scan connus (sqlmap…), Log4Shell, VPN, certains pays | 403, avant même le WAF                  | Cloudflare de l'ADEME                               |
+
+### Rate limiting et cartes
+
+**Toute carte dont les tuiles passent par le site demande un réglage dans le `Caddyfile`.**
+
+Une carte s'affiche en tuiles : une image par carré, donc une requête par tuile. À chaque zoom ou déplacement, le navigateur en demande 60 à 80 en une seconde, et plus encore avec plusieurs couches ou un grand écran. Avec la limite générale de 40 requêtes par seconde, une partie des tuiles reçoit un 429, et la carte s'affiche avec des trous.
+
+C'est arrivé le 10/11/2026, au lendemain du déploiement : avec une seule limite à 40/s, deux visiteurs ont perdu 39 et 60 tuiles, avec un pic mesuré à 79 requêtes par seconde.
+
+Le `rate_limit` du `Caddyfile` a donc deux zones, chacune avec ses propres compteurs :
+
+| Zone            | Chemins                                     | Limite par IP  |
+| --------------- | ------------------------------------------- | -------------- |
+| `par_ip`        | tout le site, **sauf** les routes de tuiles | 40 requêtes/s  |
+| `tuiles_par_ip` | routes de tuiles : `/api/map-proxy`         | 150 requêtes/s |
+
+`/api/map-proxy` relaie les tuiles de toutes les cartes qui passent par le site, quel que soit le serveur d'origine (cartagene.cerema.fr, lcz-generator.rub.de…). La route reste limitée, car elle envoie des requêtes vers des serveurs extérieurs.
+
+**Quand adapter ces réglages :**
+
+- **Une nouvelle route sert des tuiles** (autre proxy, tuiles générées par le site…) : ajouter son chemin aux **deux** blocs `match` : `path …` de la zone `tuiles_par_ip` et `not path …` de la zone `par_ip`. Les deux listes doivent rester identiques. Sinon, la route compterait dans la limite à 40, ou dans aucune zone.
+- **Une carte reçoit encore des 429** (carte plus dense, plus de couches) : augmenter `events` de la zone `tuiles_par_ip`.
+- **Une carte charge ses tuiles directement depuis un serveur externe**, sans passer par le site : rien à faire, ces requêtes ne traversent pas Caddy.
+
+Pour vérifier, après le déploiement : `bash scripts/test-waf.sh --trafic`. La rubrique « Requêtes 429 » liste les chemins limités et le nombre d'IP touchées. Des 429 venant de navigateurs sur une route de tuiles signalent une limite trop basse.
 
 ### Modifier les règles
 
 - **Ajouter une règle** (`secrules.conf`) : lui donner un ID entre 1 et 99999, la plage réservée aux règles locales.
 - **Corriger un faux positif** (`secrules.conf`) : repérer dans les logs l'ID de la règle et la variable visée (`[id "942290"]`, `found within REQUEST_COOKIES:…`). Exclure de préférence la seule variable (`SecRuleUpdateTargetById 942290 "!REQUEST_COOKIES:nom"`) plutôt que toute la règle (`SecRuleRemoveById 942290`). Noter la raison en commentaire sur la ligne du dessus.
 - **Changer un réglage de la CRS** (`crs-setup.conf`) : par exemple les types de contenu ou les méthodes HTTP autorisés.
+- **Ajouter une carte, ou une route qui sert des tuiles** (`Caddyfile`) : voir « Rate limiting et cartes » ci-dessus.
 - **Repasser en détection seule** (faux positifs massifs, en urgence) : décommenter `SecRuleRemoveById 949110` dans `secrules.conf` et redéployer. La CRS continue alors de journaliser, sans bloquer.
 
 ## Variables d'environnement (Scalingo)
@@ -140,4 +166,4 @@ Le script envoie environ 520 requêtes sur `https://tacct.ademe.fr` : requêtes 
 
 Pour relire les logs d'un test passé sans renvoyer de requêtes : `bash scripts/test-waf.sh --analyse <RUN>`.
 
-Pour voir ce que le WAF a fait sur le vrai trafic depuis son dernier démarrage (requêtes bloquées, chemins en 403, règles CRS déclenchées) : `bash scripts/test-waf.sh --trafic`. C'est la commande à lancer après chaque modification des règles, pour repérer les faux positifs. Elle repart de zéro à chaque démarrage de Caddy (déploiement ou redémarrage) et ne lit que les 10 000 dernières lignes de logs, soit environ une heure de trafic.
+Pour voir ce que le WAF a fait sur le vrai trafic depuis son dernier démarrage (requêtes bloquées, chemins en 403, chemins en 429 avec le nombre d'IP touchées, règles CRS déclenchées) : `bash scripts/test-waf.sh --trafic`. C'est la commande à lancer après chaque modification des règles, pour repérer les faux positifs. Elle repart de zéro à chaque démarrage de Caddy (déploiement ou redémarrage) et ne lit que les 10 000 dernières lignes de logs, soit environ une heure de trafic.
